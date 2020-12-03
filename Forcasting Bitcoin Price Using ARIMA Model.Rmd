@@ -1,0 +1,249 @@
+---
+title: "Forcasting Bitcoin Price Using ARIMA Model"
+author: "Longyin Poon"
+date: "4/10/2018"
+output: pdf_document
+---
+
+```{r, echo=FALSE,results='hide',warning=FALSE}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+#Training dataset includes 230 weeks from 4/8/2013 to 8/21/2017
+
+#Testing dataset consists 30 weeks of data from 8/28/2017 to 3/26/2018
+
+```{r, warning=FALSE,results="hide",echo=FALSE,message=FALSE}
+#Load packages
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(astsa)
+library(tseries)
+library(forecast)
+```
+```{r,message=FALSE}
+#Load dataset
+bitcoin_data <- read_csv("bitcoin_data.csv")
+training <- bitcoin_data[1:230,]
+testing <- bitcoin_data[231:260,]
+```
+
+#Time Series Analysis
+```{r,echo=FALSE}
+bitcoin_ts <- ts(training$bitcoin_price)
+
+```
+
+###Statitonary Test
+```{r}
+#Statitonary Test
+tsplot(x=training$week,y=training$bitcoin_price, ylab = "Bitcoin Price", xlab = "Number of Weeks",main = "Weekly Bitcoin Price from 4/8/2013 to 8/21/2017", col="steelblue", lwd=3)
+adf.test(bitcoin_ts, alternative = "stationary")
+#Fail to reject the series is non-stationary with high p-value
+```
+
+###Log transformation
+```{r}
+training$log_price <- log(training$bitcoin_price)
+tsplot(x=training$week,y=training$log_price, ylab = "Logged Bitcoin Price", xlab = "Number of Weeks",main = "Weekly Logged Bitcoin Price from 4/8/2013 to 8/21/2017", col="steelblue", lwd=3)
+
+#The augmented Dickey-Fuller test
+adf.test(training$log_price, alternative = "stationary")
+#Fail to reject the series is non-stationary but p-value is lower
+```
+
+###ACF nd PACF for logged Bitcoin Price
+```{r}
+Acf(training$log_price, main="ACF for Logged Bitcoin Price") 
+#Significant autocorrelations with many lags caused by carry over from earlier lags
+Pacf(training$log_price, main="PACF for Logged Bitcoin Price" ) 
+#A spike at 1 in PACF meaning lag 1 alone explained most of the information
+
+```
+
+###First order differencing on logged Bitcoin Price
+
+```{r}
+diff_log_price <- diff(training$log_price)
+plot(diff_log_price, type='l',xlab="Number of Weeks", ylab="Differenced logged Bitcoin Price", main = "First Order Differencing on logged Bitcoin Price")
+adf.test(diff_log_price, alternative = "stationary")
+#Reject H0 with low p-value. The series is stationary
+```
+
+###ACF and PACF for Differenced log Bitcoin Price
+```{r}
+#ACF and PACF for differenced series to determine p and q for ARIMA model
+Acf(diff_log_price, main='ACF for Differenced log Price')
+#Significant spike at lag 1 and lag 2. Consider MA(2) model
+Pacf(diff_log_price, main='PACF for Differenced log Price')
+#Significant spike at lag 1 and close to significant for lag 2. Consider AR(1) or AR(2) model
+```
+
+###Scatterplot of logged Bitcoin Price against its lags
+```{r}
+plot(x=lag(training$log_price[2:230]), y=training$log_price[2:230], ylab = "Logged Bitcoin Price", xlab = "Lag 1 Logged Bitcoin Price", pch=19, cex=0.7, col = "steelblue", main = "Scatterplot of Logged Bitcoin Price VS Lag 1 Logged Bitcoin Price")
+
+#Linear pattern suggesting the first order autoregressive model is appropriate.
+```
+
+#ARIMA Model
+```{r,echo=FALSE}
+fit<-auto.arima(training$log_price, seasonal=FALSE)
+fit
+#Auto arima function suggests (2,1,0) model
+#AIC=-398.62   AICc=-398.46   BIC=-384.39
+tsdisplay(residuals(fit), lag.max=30, main='(2,1,0) Model Residuals')
+#No significant autocorrelation presents. Residuals are somewhat normally distributed.
+
+fit_ma1 <- Arima(training$log_price,order = c(1,1,2))
+fit_ma1
+#AIC=-394.24   AICc=-394.08   BIC=-380.01
+#ARIMA (1,1,2) has higher AIC , AICc and BIC
+
+tsdisplay(residuals(fit_ma1), lag.max=30, main='(1,1,2) Model Residuals')
+
+#No significant autocorrelation presents. Residuals are somewhat normally distributed.
+```
+
+###Check Residuals for model validity
+```{R}
+res <- fit$residuals
+Acf(res, main="ACF for Residuals")
+Pacf(res, main="PACF for Residuals")
+#Based on ACF and PACF, residuals are randomly distributed.
+
+Box.test(res,type="Ljung",lag=1)
+#P-value is high so we fail to reject H0: The residuals are independent. Box-Ljung test confirms our results.
+
+```
+
+###Antilog function to reverse log transformation
+```{r}
+#Anti log function
+antilog<-function(lx,base) { 
+  lbx<-lx/log(exp(1),base=base) 
+  result<-exp(lbx) 
+  result 
+} 
+```
+
+###Forecast
+```{r}
+fcast <- forecast(fit, h=30)
+plot(fcast)
+
+#Take the exponent
+fcast$mean <- antilog(fcast$mean)
+fcast$lower <- antilog(fcast$lower)
+fcast$upper <- antilog(fcast$upper)
+fcast$x <- antilog(fcast$x)
+
+plot(fcast)
+```
+
+###Compare prediction and actual bitcoin price for 30 weeks
+```{r}
+actual <- testing$bitcoin_price
+pred <- fcast$mean[1:30]
+error <- abs(actual-pred)/actual
+prediction_table <- cbind(actual,pred,error)
+colnames(prediction_table) <- c("Actual","Prediction","%Change")
+prediction_table <- as.data.frame(prediction_table)
+prediction_table$Week <- seq(1:30)
+prediction_table
+mean(prediction_table$`%Change`)
+
+ggplot() + 
+  geom_line(aes(x=Week,y=Prediction,color="steelblue"), prediction_table)+ 
+  geom_line(aes(x=Week, y=Actual,color="red"), prediction_table) +
+  ylim(0,20000) +
+  ylab("Bitcoin Price") +
+  scale_color_manual(labels = c("Actual", "Prediction"), values = c("steelblue", "red")) + theme_classic() +
+  ggtitle("Actual VS Predicted values")
+  
+```
+
+#Add Google Trend As a Predictor
+```{r}
+tsdata <- ts(training)
+fit_trend <- auto.arima(training$log_price, xreg = training$google_trend)
+fit_trend #AIC=-405.75   AICc=-405.52   BIC=-387.97
+#Lower AIC, AICc and BIC compare with model without google trend
+
+tsdisplay(residuals(fit_trend), lag.max=30, main='(1,1,1) Model Residuals')
+```
+
+###Check Residuals for model validity
+```{R}
+res1 <- fit_trend$residuals
+Acf(res1, main="ACF for Residuals")
+Pacf(res1, main="PACF for Residuals")
+#Based on ACF and PACF, residuals are randomly distributed.
+
+Box.test(res1,type="Ljung",lag=1)
+#P-value is high so we fail to reject H0: The residuals are independent. Box-Ljung test confirms our results.
+
+```
+
+###Google Trend ARIMA Model Forcast
+```{r}
+#Forecast
+tsdata_trend <- ts(testing$google_trend)
+
+fc.c2 <- forecast(tsdata_trend, h = 30)
+
+newxreg <- as.matrix(fc.c2$mean)
+
+fcast_trend <- forecast(fit_trend, xreg = newxreg)
+
+plot(fcast_trend)
+
+#Take the exponent
+fcast_trend$mean <- antilog(fcast_trend$mean)
+fcast_trend$lower <- antilog(fcast_trend$lower)
+fcast_trend$upper <- antilog(fcast_trend$upper)
+fcast_trend$x <- antilog(fcast_trend$x)
+
+
+plot(fcast_trend)
+```
+
+
+###Compare prediction and actual bitcoin price for 30 weeks
+```{r}
+actual <- testing$bitcoin_price
+pred1 <- fcast_trend$mean[1:30]
+error1 <- abs(actual-pred1)/actual
+prediction_table1 <- cbind(actual,pred1,error1)
+colnames(prediction_table1) <- c("Actual","Prediction","%Change")
+prediction_table1 <- as.data.frame(prediction_table1)
+prediction_table1$Week <- seq(1:30)
+prediction_table1
+mean(prediction_table1$`%Change`)
+
+ggplot() + 
+  geom_line(aes(x=Week,y=Prediction,color="steelblue"), prediction_table1)+ 
+  geom_line(aes(x=Week, y=Actual,color="red"), prediction_table1) +
+  ylim(0,20000) +
+  ylab("Bitcoin Price") +
+  scale_color_manual(labels = c("Actual", "Prediction"), values = c("steelblue", "red")) + theme_classic() +
+  ggtitle("Actual VS Predicted values")
+
+```
+
+
+#Accuracy of all ARIMA Model
+```{r}
+#Accuracy
+accuracy(prediction_table$Actual,prediction_table$Prediction)
+accuracy(prediction_table1$Actual,prediction_table1$Prediction)
+```
+
+
+
