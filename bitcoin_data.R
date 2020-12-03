@@ -2,7 +2,7 @@ library(readr)
 ##################Combine all data into one dataset####################
 bitcoin <- read_csv("bitcoinity_data.csv")
 str(bitcoin)
-google <- read_csv("multiTimeline.csv", skip=2)
+google <- read_csv("bitcoin_google_trend.csv", skip=2)
 str(google)
 
 ######
